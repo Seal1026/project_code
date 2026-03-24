@@ -2,10 +2,8 @@
 import math
 import numpy as np
 import pandas as pd
+import my_trade_algo as mta
 
-# TODO
-def trade_time(datetime):
-    return datetime.minute == 0 or datetime.minute == 30
 
 def backtest(df,calc_share_function= None,lvg = None):
     df = df.copy()
@@ -86,7 +84,7 @@ def backtest(df,calc_share_function= None,lvg = None):
             continue
 
         # Trade only at 30 and 00
-        if not trade_time(datetime):
+        if not mta.trade_time(datetime.minute):
             update_arrays(i)
             continue
         

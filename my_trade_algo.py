@@ -39,6 +39,11 @@ def calculate_orb(df, orb_minutes=30):
 
     return df
 
+def trade_time(minute):
+    #TODO: Update and change back.
+    return (minute==30) | (minute == 0)
+    # return minute%15==0
+    
 
 #base momentum strategy
 def calculate_momentum(df):
@@ -69,7 +74,8 @@ def calculate_momentum(df):
     df["lower"] = df[["prev_day_close", "day_open"]].min(axis=1) * (1- df["avg_pct_ch_14d"])
 
     #只在整点和半点进行交易
-    df.loc[(df.index.minute==30) | (df.index.minute == 0),["trade_time"]] = True 
+    minute = df.index.minute
+    df.loc[trade_time(minute),["trade_time"]] = True
 
     df["buy"] = (df["Close"] > df["upper"]) & df["trade_time"]
     df["sell"] = (df["Close"] < df["lower"])& df["trade_time"]

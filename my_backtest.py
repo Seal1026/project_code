@@ -1,175 +1,273 @@
 #回测函数
-import math
 import numpy as np
-import pandas as pd
+
 import my_trade_algo as mta
 
 
-def backtest(df,calc_share_function= None,lvg = None):
+def _mark_trade(df, index, column):
+    df.loc[index, column] = True
+
+
+def _log_day_start(timestamp, position_qty, realized_pnl, share_today, cash, open_price):
+    print("===============================")
+    print(
+        f"{timestamp}: Start of day. Position quantity: {position_qty}. "
+        f"Realized pnl: {realized_pnl}. Calculate share: {share_today}. "
+        f"Cash: {cash}. Open: {open_price}"
+    )
+
+
+def _log_position_entry(side, timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity):
+    print(
+        f"{timestamp}: ENTER {side}: Position quantity: {position_qty}. "
+        f"Realized pnl: {realized_pnl}. Cash: {cash}. "
+        f"Avg entry price: {avg_entry_price}. Equity: {equity}"
+    )
+
+
+def _log_position_exit(side, timestamp, profit, position_qty, close_price, realized_pnl, cash, avg_entry_price, equity):
+    print(
+        f"{timestamp}: EXIT {side}: Profit: {profit}. Close: {close_price}. "
+        f"Position quantity: {position_qty}. Realized pnl: {realized_pnl}. "
+        f"Cash: {cash}. Avg entry price: {avg_entry_price}. Equity: {equity}"
+    )
+
+
+def _log_position_hold(side, timestamp, close_price, upper, lower):
+    print(f"{timestamp}: REMAIN {side}: Close: {close_price}. Upper: {upper}. Lower: {lower}")
+
+
+def _log_flat(timestamp, close_price, upper, lower):
+    print(f"{timestamp}: FLAT: Close: {close_price}. Upper: {upper}. Lower: {lower}")
+
+
+def _log_day_end(timestamp, position_qty, realized_pnl, close_price, cash):
+    print(
+        f"{timestamp}: End of day. Position quantity: {position_qty}. "
+        f"Realized pnl: {realized_pnl}. Close: {close_price}. Cash: {cash}. "
+        f"Realized PnL: {realized_pnl}"
+    )
+
+
+def _log_backtest_end(position_qty, realized_pnl, cash, avg_entry_price, equity):
+    print(
+        f"END OF BACKTEST: Position quantity: {position_qty}. "
+        f"Realized pnl: {realized_pnl}. Cash: {cash}. "
+        f"Avg entry price: {avg_entry_price}. Equity: {equity}"
+    )
+
+
+def _enter_position(df, index, side, share_today, close_price, cash):
+    if side == "long":
+        position_qty = share_today
+        cash -= share_today * close_price
+        _mark_trade(df, index, "long")
+    else:
+        position_qty = -share_today
+        cash += share_today * close_price
+        _mark_trade(df, index, "short")
+
+    avg_entry_price = close_price
+    return position_qty, avg_entry_price, cash
+
+
+def _close_position(position_qty, avg_entry_price, close_price, cash, realized_pnl):
+    profit = (close_price - avg_entry_price) * position_qty
+    cash += position_qty * close_price
+    realized_pnl += profit
+    return profit, cash, realized_pnl
+
+
+def _reset_position():
+    return 0, 0
+
+
+def _mark_to_market(position_qty, avg_entry_price, close_price, cash):
+    unrealized_pnl = position_qty * (close_price - avg_entry_price) if position_qty != 0 else 0
+    equity = cash + position_qty * close_price
+    return unrealized_pnl, equity
+
+
+def _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr):
+    realized_pnl_arr[i] = realized_pnl
+    unrealized_pnl_arr[i] = unrealized_pnl
+    cash_arr[i] = cash
+    equity_arr[i] = equity
+
+
+def _calculate_share_today(calc_share_function, equity, cash, open_price, row, lvg):
+    if calc_share_function is None:
+        return equity // open_price
+    return calc_share_function(cash, row, lvg)
+
+
+def _handle_entry(df, index, side, share_today, close_price, realized_pnl, equity, timestamp, cash):
+    position_qty, avg_entry_price, cash = _enter_position(df, index, side, share_today, close_price, cash)
+    unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+    _log_position_entry(side.upper(), timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity)
+    return position_qty, avg_entry_price, cash, unrealized_pnl, equity
+
+
+def _close_and_optionally_reverse(
+    df,
+    index,
+    current_side,
+    next_side,
+    position_qty,
+    avg_entry_price,
+    close_price,
+    cash,
+    realized_pnl,
+    share_today,
+    enter_opposite,
+    timestamp,
+):
+    profit, cash, realized_pnl = _close_position(position_qty, avg_entry_price, close_price, cash, realized_pnl)
+    _mark_trade(df, index, "close")
+    _, exit_equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+    _log_position_exit(current_side.upper(), timestamp, profit, position_qty, close_price, realized_pnl, cash, avg_entry_price, exit_equity)
+
+    if enter_opposite:
+        position_qty, avg_entry_price, cash = _enter_position(df, index, next_side, share_today, close_price, cash)
+    else:
+        position_qty, avg_entry_price = _reset_position()
+
+    unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+
+    if enter_opposite:
+        _log_position_entry(next_side.upper(), timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity)
+
+    return position_qty, avg_entry_price, cash, realized_pnl, unrealized_pnl, equity
+
+
+def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False):
     df = df.copy()
 
-    position_qty = 0 
-    avg_entry_price = 0 
-
-    share_today = 0 
+    position_qty = 0
+    avg_entry_price = 0
+    share_today = 0
 
     cash = 100000
-
     realized_pnl = 0
     unrealized_pnl = 0
-
     equity = cash
-    trade_count = 0 
 
     n = df.shape[0]
-    
     realized_pnl_arr = np.zeros(n)
     unrealized_pnl_arr = np.zeros(n)
     cash_arr = np.zeros(n)
     equity_arr = np.zeros(n)
 
-    #每日的开盘和收盘时间 US: 9:30-16:00
-    day_last_set = set(df.groupby(df.index.normalize())\
-                       .tail(1).index)
-    day_first_set = set(df.groupby(df.index.normalize())\
-                       .head(1).index)
-    
-    def update_arrays(i):
-        realized_pnl_arr[i] = realized_pnl
-        unrealized_pnl_arr[i] = unrealized_pnl
-        cash_arr[i] = cash
-        equity_arr[i] = equity
-    
-    for i,row in enumerate(df.itertuples()):
-        # within the day 
-        open,close = row.Open, row.Close
-        buy_signal = short_stop = row.buy 
-        short_signal = long_stop = row.sell
-        datetime = row.Index
+    # 每日的开盘和收盘时间 US: 9:30-16:00
+    day_last_set = set(df.groupby(df.index.normalize()).tail(1).index)
+    day_first_set = set(df.groupby(df.index.normalize()).head(1).index)
+
+    for i, row in enumerate(df.itertuples()):
+        open_price = row.Open
+        close_price = row.Close
+        timestamp = row.Index
         upper = row.upper
         lower = row.lower
-  
-        # 0. day open, share    
-        if datetime in day_first_set:
-            if not calc_share_function:
-                share_today = equity // open
-            else:
-                share_today = calc_share_function(cash,row,lvg)
 
-            print("===============================")
-            print(f"{datetime}: Start of day. Position quantity: {position_qty}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Calculate share: {share_today}. Cash: {cash}. Open: {open}")
-            update_arrays(i)
-            continue
-        
+        buy_signal = row.buy
+        short_stop = row.buy
+        short_signal = row.sell
+        long_stop = row.sell
+
         if "long_stop" in row._fields and "short_stop" in row._fields:
             long_stop = row.long_stop
             short_stop = row.short_stop
 
-        # 4. end of date [end position] 
-        if datetime in day_last_set:
-            # close existing position
-            if position_qty!=0:
-                profit = (close - avg_entry_price) * position_qty
-                cash += position_qty * close
-
-                realized_pnl += profit 
-                print(f"{datetime}: CLOSE POSITION: Profit: {profit}.Position quantity: {position_qty}.Close:{close}.Cash: {cash}. Avg entry price: {avg_entry_price}.")
-
-                position_qty = 0
-                avg_entry_price = 0
-                
-            
-            print(f"{datetime}: End of day. Position quantity: {position_qty}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Close:{close}. Cash: {cash}. Realized PnL: {realized_pnl}")
-            update_arrays(i)
+        if timestamp in day_first_set:
+            share_today = _calculate_share_today(calc_share_function, equity, cash, open_price, row, lvg)
+            _log_day_start(timestamp, position_qty, realized_pnl, share_today, cash, open_price)
+            unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+            _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
 
-        # Trade only at 30 and 00
-        if not mta.trade_time(datetime.minute):
-            update_arrays(i)
+        if timestamp in day_last_set:
+            if position_qty != 0:
+                profit, cash, realized_pnl = _close_position(position_qty, avg_entry_price, close_price, cash, realized_pnl)
+                print(
+                    f"{timestamp}: CLOSE POSITION: Profit: {profit}. Position quantity: {position_qty}. "
+                    f"Close: {close_price}. Cash: {cash}. Avg entry price: {avg_entry_price}."
+                )
+                position_qty, avg_entry_price = _reset_position()
+
+            unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+            _log_day_end(timestamp, position_qty, realized_pnl, close_price, cash)
+            _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
-        
-        # 1. 0 position
+
+        if not mta.trade_time(timestamp.minute):
+            unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+            _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
+            continue
+
         if position_qty == 0:
-            # 1.1 0 >> long
             if buy_signal:
-                position_qty = share_today
-                avg_entry_price = close
-
-                cash -= position_qty * avg_entry_price
-                unrealized_pnl = position_qty * (close - avg_entry_price)
-
-                df.loc[df.index[i], "long"] = True
-                print(f"{datetime}: ENTER LONG: Position quantity: {position_qty}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Cash: {cash}. Avg entry price: {avg_entry_price}. Equity: {equity}")
-            # 1.2 0 >> short
+                position_qty, avg_entry_price, cash, unrealized_pnl, equity = _handle_entry(
+                    df, df.index[i], "long", share_today, close_price, realized_pnl, equity, timestamp, cash
+                )
             elif short_signal:
-                position_qty = -share_today
-                avg_entry_price = close
-                cash += share_today * close
+                position_qty, avg_entry_price, cash, unrealized_pnl, equity = _handle_entry(
+                    df, df.index[i], "short", share_today, close_price, realized_pnl, equity, timestamp, cash
+                )
+            else:
+                unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+                _log_flat(timestamp, close_price, upper, lower)
 
-                unrealized_pnl = position_qty * (close - avg_entry_price)
-                df.loc[df.index[i], "short"] = True
-                print(f"{datetime}: ENTER SHORT: Position quantity: {position_qty}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Cash: {cash}. Avg entry price: {avg_entry_price}. Equity: {equity}")
-            
-            else: 
-                unrealized_pnl = position_qty * (close - avg_entry_price) if position_qty != 0 else 0
-                equity = cash + position_qty * close
-                print(f"{datetime}: FLAT: Close:{close}. Upper: {upper}. Lower: {lower}")
-            update_arrays(i)
+            _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
 
-
-        # 2. long >> short, close and then open
         if position_qty > 0:
             if long_stop:
-                profit = (close - avg_entry_price) * position_qty 
-                realized_pnl += profit
-                cash += position_qty * close
-                df.loc[df.index[i], "close"] = True
-                print(f"{datetime}: EXIT LONG: Profit: {profit}. Close:{close}.Position quantity: {position_qty}. Close:{close}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Cash: {cash}. Avg entry price: {avg_entry_price}. Equity: {equity}")
-
-                position_qty = -share_today 
-                avg_entry_price = close 
-                cash += share_today * close
-
-                df.loc[df.index[i], "short"] = True
-
-                unrealized_pnl = position_qty * (close - avg_entry_price)
-                print(f"{datetime}: ENTER SHORT: Position quantity: {position_qty}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Cash: {cash}. Avg entry price: {avg_entry_price}. Equity: {equity}")
+                position_qty, avg_entry_price, cash, realized_pnl, unrealized_pnl, equity = _close_and_optionally_reverse(
+                    df,
+                    df.index[i],
+                    "long",
+                    "short",
+                    position_qty,
+                    avg_entry_price,
+                    close_price,
+                    cash,
+                    realized_pnl,
+                    share_today,
+                    enter_opposite,
+                    timestamp,
+                )
             else:
-                unrealized_pnl = position_qty * (close - avg_entry_price) if position_qty != 0 else 0
-                equity = cash + position_qty * close
-                print(f"{datetime}: REMAIN LONG: Close:{close}.Upper: {upper}. Lower: {lower}")
-            update_arrays(i)
+                unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+                _log_position_hold("LONG", timestamp, close_price, upper, lower)
+
+            _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
 
-        # 3. short > long 
-        if position_qty < 0:
-            if short_stop:
-                profit = (close - avg_entry_price) * position_qty 
-                realized_pnl += profit
+        if short_stop:
+            position_qty, avg_entry_price, cash, realized_pnl, unrealized_pnl, equity = _close_and_optionally_reverse(
+                df,
+                df.index[i],
+                "short",
+                "long",
+                position_qty,
+                avg_entry_price,
+                close_price,
+                cash,
+                realized_pnl,
+                share_today,
+                enter_opposite,
+                timestamp,
+            )
+        else:
+            unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
+            _log_position_hold("SHORT", timestamp, close_price, upper, lower)
 
-                cash += position_qty * close #flat short: reduce money
-
-                print(f"{datetime}: EXIT SHORT: Profit: {profit}.Close:{close}. Position quantity: {position_qty}.Close:{close}.  Unrealized pnl: {unrealized_pnl}.Realized pnl: {realized_pnl}. Cash: {cash}.Avg entry price: {avg_entry_price}. Equity: {equity}")
-
-                df.loc[df.index[i], "close"] = True
-                df.loc[df.index[i], "long"] = True
-                position_qty = share_today 
-                avg_entry_price = close 
-                cash -= position_qty * close
-                unrealized_pnl = position_qty * (close - avg_entry_price)
-                print(f"{datetime}: ENTER LONG: Position quantity: {position_qty}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Cash: {cash}. Avg entry price: {avg_entry_price}.  Equity: {equity}")
-            else: 
-                unrealized_pnl = position_qty * (close - avg_entry_price) if position_qty != 0 else 0
-                equity = cash + position_qty * close
-                print(f"{datetime}: REMAIN SHORT: Close:{close}.Upper: {upper}. Lower: {lower}")
-            update_arrays(i)
-            continue
+        _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
 
     df["realized_pnl"] = realized_pnl_arr
     df["unrealized_pnl"] = unrealized_pnl_arr
     df["cash"] = cash_arr
     df["equity"] = equity_arr
-    print(f"END OF BACKTEST: Position quantity: {position_qty}.Unrealized pnl: {unrealized_pnl}. Realized pnl: {realized_pnl}.Cash: {cash}. Avg entry price: {avg_entry_price}. Equity: {equity}")
 
+    _log_backtest_end(position_qty, realized_pnl, cash, avg_entry_price, equity)
     return realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr, df

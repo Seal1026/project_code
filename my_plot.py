@@ -12,6 +12,7 @@ def plot_line(df, day, vwap=False, ax=None, show_legend=True):
     dt.loc[(dt.index.minute == 30) | (dt.index.minute == 0), "trade_time"] = True
     s = dt["short"] & dt["trade_time"] #卖出信号
     b = dt["long"] & dt["trade_time"] #买入信号
+    c = dt["close"] & dt["trade_time"] #止损信号
 
     if ax is None:
         _, ax = plt.subplots(figsize=(14, 7))
@@ -26,6 +27,7 @@ def plot_line(df, day, vwap=False, ax=None, show_legend=True):
     #画出买入和卖出信号的三角形
     ax.plot(dt.index[s], dt["Close"][s], linestyle="None", marker="^", markersize=8, label="Sell", color="green")
     ax.plot(dt.index[b], dt["Close"][b], linestyle="None", marker="^", markersize=8, label="Buy", color="red")
+    ax.plot(dt.index[b], dt["Close"][c], linestyle="None", marker="^", markersize=8, label="Close", color="yellow")
 
     #x轴设置为30分钟的间隔，并格式化为小时和分钟
     ticks = pd.date_range(dt.index[0], dt.index[-1], freq="30min")

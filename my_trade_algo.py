@@ -83,6 +83,7 @@ def calculate_momentum(df):
     return df
 
 
+
 #Improvement 1: Trailing Cross current band & VWAP
 def cross_boundary_buy_signal_VWAP(df):
     df = df.copy()
@@ -92,8 +93,13 @@ def cross_boundary_buy_signal_VWAP(df):
     df["cumsum_volume"] = df.groupby(df.index.date)["Volume"].cumsum()
     df["VWAP"] = df["cumsum_pv"]/df["cumsum_volume"]
 
-    df["short_stop"] = df["Close"] > df[["lower","VWAP"]].min(axis=1)
+    df["short_stop"] = df["Close"] > df[["lower","VWAP"]].min(axis=1) 
     df["long_stop"] = df["Close"] < df[["upper","VWAP"]].max(axis=1)
+
+    # TODO: if we loose the condition for stop loss
+    # df["short_stop"] = (df["Close"] > df[["lower","VWAP"]].min(axis=1) ) | df["orb_breakout"]
+    # df["long_stop"] = (df["Close"] < df[["upper","VWAP"]].max(axis=1)) | df["orb_breakdown"]
+
     return df
 
 
@@ -136,7 +142,7 @@ def buy_and_hold(cash,df):
 def mom_orb_combined(df,orb_minutes=30):
     df = calculate_orb(df, orb_minutes)
     df = calculate_momentum(df)
-    df["buy"]  = df["buy"]  & df["orb_breakout"]  & df["trade_time"]
+    df["buy"]  = df["buy"]  & df["orb_breakout"]  & df["trade_time"] 
     df["sell"] = df["sell"] & df["orb_breakdown"]  & df["trade_time"]
     
     return df

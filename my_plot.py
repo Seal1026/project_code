@@ -27,7 +27,7 @@ def plot_line(df, day, vwap=False, ax=None, show_legend=True):
     #画出买入和卖出信号的三角形
     ax.plot(dt.index[s], dt["Close"][s], linestyle="None", marker="^", markersize=8, label="Sell", color="green")
     ax.plot(dt.index[b], dt["Close"][b], linestyle="None", marker="^", markersize=8, label="Buy", color="red")
-    ax.plot(dt.index[b], dt["Close"][c], linestyle="None", marker="^", markersize=8, label="Close", color="yellow")
+    ax.plot(dt.index[c], dt["Close"][c], linestyle="None", marker="^", markersize=8, label="Close", color="yellow")
 
     #x轴设置为30分钟的间隔，并格式化为小时和分钟
     ticks = pd.date_range(dt.index[0], dt.index[-1], freq="30min")

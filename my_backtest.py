@@ -188,6 +188,7 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False):
         if timestamp in day_last_set:
             if position_qty != 0:
                 profit, cash, realized_pnl = _close_position(position_qty, avg_entry_price, close_price, cash, realized_pnl)
+                # _mark_trade(df, i, "close")
                 print(
                     f"{timestamp}: CLOSE POSITION: Profit: {profit}. Position quantity: {position_qty}. "
                     f"Close: {close_price}. Cash: {cash}. Avg entry price: {avg_entry_price}."

@@ -2,6 +2,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import pandas as pd
+import numpy as np
 
 #画出某一日的价格走势、上下界和交易信号
 def plot_line(df, day, vwap=False, ax=None, show_legend=True):
@@ -76,6 +77,105 @@ def plot_line_grid(df, days, vwap=False, ncols=5, figsize_per_plot=(4.6, 3.6)):
         fig.tight_layout()
 
     plt.show()
+
+
+def plot_equity_with_halfyear_vix(
+    price_index,
+    equity_series_dict,
+    df_vix,
+    title="Strategy Equity Curves with Semiannual Average VIX",
+    vix_col="Open",
+):
+    price_index = pd.to_datetime(price_index)
+    vix = df_vix.copy()
+    vix.index = pd.to_datetime(vix.index)
+
+    start = price_index.min().normalize()
+    end = price_index.max().normalize()
+    vix = vix.loc[(vix.index >= start) & (vix.index <= end)]
+
+    halfyear_vix = (
+        vix[[vix_col]]
+        .resample("2QS-JAN")
+        .mean()
+        .rename(columns={vix_col: "avg_vix"})
+    )
+    halfyear_vix["period_end"] = halfyear_vix.index + pd.offsets.MonthEnd(5)
+
+    fig, (ax_equity, ax_vix) = plt.subplots(
+        2,
+        1,
+        figsize=(14, 8),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.5, 1.2], "hspace": 0.08},
+    )
+
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#4c566a", "#d62728"]
+    for i, (label, series) in enumerate(equity_series_dict.items()):
+        series = pd.Series(series, index=price_index) if not isinstance(series, pd.Series) else series
+        series.index = pd.to_datetime(series.index)
+        ax_equity.plot(
+            series.index,
+            series.values,
+            label=label,
+            linewidth=2.1 if "Buy and hold" not in label else 1.8,
+            color=palette[i % len(palette)],
+            alpha=0.95,
+        )
+
+    ax_equity.set_title(title, fontsize=13, fontweight="bold")
+    ax_equity.set_ylabel("Portfolio Value", fontsize=10)
+    ax_equity.grid(True, axis="y", alpha=0.25, linestyle="--")
+    ax_equity.spines["top"].set_visible(False)
+    ax_equity.spines["right"].set_visible(False)
+    ax_equity.legend(loc="upper left", ncol=2, frameon=False, fontsize=9)
+
+    if not halfyear_vix.empty:
+        bar_width = np.diff(mdates.date2num(halfyear_vix["period_end"][:2])).mean() * 0.75 if len(halfyear_vix) > 1 else 120
+        bars = ax_vix.bar(
+            halfyear_vix.index,
+            halfyear_vix["avg_vix"],
+            width=bar_width,
+            align="edge",
+            color="#c9d7e3",
+            edgecolor="#5b7285",
+            linewidth=0.9,
+            label="Avg VIX (Half-Year)",
+        )
+        ax_vix.plot(
+            halfyear_vix.index + pd.offsets.MonthBegin(1),
+            halfyear_vix["avg_vix"],
+            color="#17324d",
+            linewidth=1.6,
+            marker="o",
+            markersize=4,
+        )
+
+        for bar, value in zip(bars, halfyear_vix["avg_vix"]):
+            ax_vix.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height(),
+                f"{value:.1f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color="#17324d",
+            )
+
+    ax_vix.set_ylabel("Avg VIX", fontsize=10)
+    ax_vix.set_xlabel("Date", fontsize=10)
+    ax_vix.grid(True, axis="y", alpha=0.25, linestyle="--")
+    ax_vix.spines["top"].set_visible(False)
+    ax_vix.spines["right"].set_visible(False)
+
+    locator = mdates.AutoDateLocator(maxticks=8)
+    ax_vix.xaxis.set_major_locator(locator)
+    ax_vix.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+
+    fig.align_ylabels([ax_equity, ax_vix])
+    fig.tight_layout()
+    plt.show()
+    return fig, (ax_equity, ax_vix)
 
 
 

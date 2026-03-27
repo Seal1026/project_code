@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
 
 
 def _as_daily_equity(equity):
@@ -39,21 +40,7 @@ def daily_returns_with_vix(equity, df_vix):
     return combined
 
 
-def conditional_sharpe_ratio(returns, rf_annual=0.01):
-    returns = pd.Series(returns).dropna()
-    if len(returns) < 2:
-        return np.nan
-
-    rf_daily = (1 + rf_annual) ** (1 / 252) - 1
-    excess_returns = returns - rf_daily
-    std = excess_returns.std(ddof=1)
-    if std == 0 or np.isnan(std):
-        return np.nan
-
-    return excess_returns.mean() / std * np.sqrt(252)
-
-
-def sharpe_by_vix_threshold(equity, df_vix, thresholds=None, rf_annual=0.01, min_obs=20):
+def daily_return_by_vix_threshold(equity, df_vix, thresholds=None, min_obs=20):
     if thresholds is None:
         thresholds = range(6, 52, 2)
 
@@ -62,12 +49,12 @@ def sharpe_by_vix_threshold(equity, df_vix, thresholds=None, rf_annual=0.01, min
     results = []
     for threshold in thresholds:
         subset = combined.loc[combined["vix_open"] > threshold, "strategy_return"]
-        sharpe_value = conditional_sharpe_ratio(subset, rf_annual=rf_annual) if len(subset) >= min_obs else np.nan
+        avg_daily_return = subset.mean() if len(subset) >= min_obs else np.nan
         results.append(
             {
                 "threshold": threshold,
                 "label": f"VIX > {threshold}",
-                "sharpe_ratio": sharpe_value,
+                "daily_return": avg_daily_return,
                 "observations": int(len(subset)),
             }
         )
@@ -75,22 +62,59 @@ def sharpe_by_vix_threshold(equity, df_vix, thresholds=None, rf_annual=0.01, min
     return pd.DataFrame(results)
 
 
-def plot_sharpe_by_vix_threshold(
-    sharpe_df,
+def daily_return_by_vix_bin(equity, df_vix, bins=None, min_obs=20):
+    if bins is None:
+        bins = [0, 15, 20, 25, 30, np.inf]
+
+    combined = daily_returns_with_vix(equity, df_vix).copy()
+    labels = []
+    for left, right in zip(bins[:-1], bins[1:]):
+        if np.isinf(right):
+            labels.append(f"VIX >= {left}")
+        else:
+            labels.append(f"{left} <= VIX < {right}")
+
+    combined["vix_bin"] = pd.cut(
+        combined["vix_open"],
+        bins=bins,
+        labels=labels,
+        right=False,
+        include_lowest=True,
+    )
+
+    results = []
+    for label in labels:
+        subset = combined.loc[combined["vix_bin"] == label, "strategy_return"]
+        avg_daily_return = subset.mean() if len(subset) >= min_obs else np.nan
+        results.append(
+            {
+                "label": label,
+                "daily_return": avg_daily_return,
+                "observations": int(len(subset)),
+            }
+        )
+
+    return pd.DataFrame(results)
+
+
+def plot_daily_return_by_vix_threshold(
+    return_df,
     ax=None,
     title="Market Volatility vs Profitability",
     color="#1f77b4",
+    xlabel="VIX Threshold",
 ):
-    plot_df = sharpe_df.copy()
-    plot_df = plot_df.dropna(subset=["sharpe_ratio"])
+    plot_df = return_df.copy()
+    plot_df = plot_df.dropna(subset=["daily_return"])
 
     if ax is None:
         _, ax = plt.subplots(figsize=(12, 4.5))
 
-    ax.bar(plot_df["label"], plot_df["sharpe_ratio"], color=color, edgecolor="#145a86")
+    ax.bar(plot_df["label"], plot_df["daily_return"], color=color, edgecolor="#145a86")
     ax.set_title(title, fontweight="bold")
-    ax.set_ylabel("Sharpe Ratio")
-    ax.set_xlabel("VIX @ Open")
+    ax.set_ylabel("Average Daily Return")
+    ax.set_xlabel(xlabel)
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
     ax.grid(axis="y", alpha=0.2, linestyle="--")
     ax.set_axisbelow(True)
     ax.tick_params(axis="x", rotation=90)
@@ -98,13 +122,84 @@ def plot_sharpe_by_vix_threshold(
     return ax
 
 
+def plot_daily_return_by_vix_bin(
+    return_df,
+    ax=None,
+    title="Average Daily Return by VIX Regime",
+    color="#2c7fb8",
+    xlabel="VIX Regime",
+):
+    plot_df = return_df.copy()
+    plot_df = plot_df.dropna(subset=["daily_return"])
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 4.5))
+
+    ax.bar(plot_df["label"], plot_df["daily_return"], color=color, edgecolor="#1d4f73")
+    ax.set_title(title, fontweight="bold")
+    ax.set_ylabel("Average Daily Return")
+    ax.set_xlabel(xlabel)
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+    ax.grid(axis="y", alpha=0.2, linestyle="--")
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="x", rotation=35)
+    plt.tight_layout()
+    return ax
+
+
+def plot_daily_return_vs_vix_scatter(
+    equity,
+    df_vix,
+    ax=None,
+    title="Daily Return vs VIX Open",
+    color="#2c7fb8",
+    alpha=0.45,
+    point_size=18,
+    xlabel="VIX Open",
+):
+    scatter_df = daily_returns_with_vix(equity, df_vix).copy()
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(11, 5))
+
+    ax.scatter(
+        scatter_df["vix_open"],
+        scatter_df["strategy_return"],
+        s=point_size,
+        alpha=alpha,
+        color=color,
+        edgecolors="none",
+        label="Daily observations",
+    )
+    ax.axhline(0, color="#6b7280", linewidth=1.0, linestyle="--", alpha=0.8)
+    ax.set_title(title, fontweight="bold")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Daily Return")
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+    ax.grid(True, alpha=0.2, linestyle="--")
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, loc="best")
+    plt.tight_layout()
+    return ax
+
+
 def build_vix_regime_report(equity, df_vix, thresholds=None, rf_annual=0.01, min_obs=20, ax=None):
-    sharpe_df = sharpe_by_vix_threshold(
+    return_df = daily_return_by_vix_threshold(
         equity=equity,
         df_vix=df_vix,
         thresholds=thresholds,
-        rf_annual=rf_annual,
         min_obs=min_obs,
     )
-    plot_sharpe_by_vix_threshold(sharpe_df, ax=ax)
-    return sharpe_df
+    plot_daily_return_by_vix_threshold(return_df, ax=ax)
+    return return_df
+
+
+def build_vix_bin_report(equity, df_vix, bins=None, min_obs=20, ax=None):
+    return_df = daily_return_by_vix_bin(
+        equity=equity,
+        df_vix=df_vix,
+        bins=bins,
+        min_obs=min_obs,
+    )
+    plot_daily_return_by_vix_bin(return_df, ax=ax)
+    return return_df

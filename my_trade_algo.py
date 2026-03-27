@@ -139,10 +139,16 @@ def buy_and_hold(cash,df):
     buy_hold = shares*df["Close"]
     return buy_hold
 
+def orb_baseline(df,orb_minutes=30):
+    df = calculate_orb(df, orb_minutes)
+    df["buy"]  = df["orb_breakout"]  & df["trade_time"] 
+    df["sell"] = df["orb_breakdown"]  & df["trade_time"]
+    return df
+
 def mom_orb_combined(df,orb_minutes=30):
     df = calculate_orb(df, orb_minutes)
     df = calculate_momentum(df)
-    df["buy"]  = df["buy"]  & df["orb_breakout"]  & df["trade_time"] 
-    df["sell"] = df["sell"] & df["orb_breakdown"]  & df["trade_time"]
+    df["buy"]  = (df["buy"]  & df["orb_breakout"])  & df["trade_time"] 
+    df["sell"] = (df["sell"] & df["orb_breakdown"])  & df["trade_time"]
     
     return df

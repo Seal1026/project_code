@@ -215,64 +215,85 @@ def _calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def best_strategy(df, df_vix=None, orb_minutes=30):
+def best_strategy(
+    df,
+    df_vix=None,
+    orb_minutes=30,
+    use_rsi=True,
+    rsi_long_thresh=50.0,
+    rsi_short_thresh=50.0,
+    use_vix_filter=True,
+    vix_threshold=40.0,
+    long_only=False,
+):
     """
-    Best performing strategy combining:
-    1. Momentum band signals (upper/lower based on 14-day historical vol)
-    2. VWAP-based stop loss (exit when price crosses VWAP)
-    3. ORB day-level confirmation filter — once the opening range is broken in a given
-       direction, that flag stays True for the entire rest of the day. This avoids the
-       per-bar flickering of raw orb_breakout (which resets to False whenever price
-       dips back below ORB high even briefly).
-    4. Daily RSI filter — RSI is computed on daily closes (not per-minute bars), so it
-       is a stable, meaningful trend signal rather than 14-minute noise.
-    5. VIX regime filter (skip trading when VIX > 40, extreme market stress)
-    6. VIX-adjusted position sizing via share_cal_vix_regime
+    Configurable best strategy combining momentum bands, VWAP stops, and optional filters.
+
+    Parameters
+    ----------
+    df : OHLCV DataFrame
+    df_vix : daily VIX DataFrame (required when use_vix_filter=True or share_cal_vix_regime)
+    orb_minutes : opening range window in minutes (default 30)
+    use_rsi : enable daily RSI momentum filter (default True)
+    rsi_long_thresh : RSI threshold for long entries, e.g. 50 (default) or 40 (relaxed)
+    rsi_short_thresh : RSI threshold for short entries, e.g. 50 (default) or 60 (relaxed)
+    use_vix_filter : skip trading when VIX > vix_threshold (default True)
+    vix_threshold : VIX level above which trading is skipped (default 40)
+    long_only : if True, suppress all short signals — suitable for bull-market ETFs (default False)
+
+    Always applied:
+    - Momentum bands (upper/lower from 14-day historical vol)
+    - VWAP-based stop loss
+    - Day-level ORB confirmation (persistent breakout flag, not per-bar flickering)
+    - 14-day volatility-based position sizing (via daily_share_by_std)
     """
     df = calculate_orb(df, orb_minutes)
     df = calculate_momentum(df)             # adds upper, lower, trade_time, buy, sell
     df = cross_boundary_buy_signal_VWAP(df) # adds VWAP, long_stop, short_stop
     df = daily_share_by_std(df)             # adds vol_daily_ret_14d
 
-    # --- Day-level ORB flag (Fix 1) ---
-    # Once the ORB is broken intraday, mark the entire rest of that day as "broken".
-    # This prevents valid momentum signals from being blocked just because price
-    # briefly dipped below ORB high at the :00/:30 sampling moment.
+    # Day-level ORB flag (always on): once broken, stays True for rest of day
     df["date"] = pd.to_datetime(df.index.date)
     df["orb_day_breakout"]  = df.groupby("date")["orb_breakout"].transform("any")
     df["orb_day_breakdown"] = df.groupby("date")["orb_breakdown"].transform("any")
 
-    # --- Daily RSI filter (Fix 2) ---
-    # Use daily closing prices for RSI — avoids the extreme noise of 1-minute RSI.
-    # RSI > 50 = bullish daily momentum; RSI < 50 = bearish daily momentum.
+    # Daily RSI (computed on daily closes, shifted 1 day to avoid lookahead)
     daily_close = df.groupby("date")["Close"].last()
-    daily_rsi   = _calculate_rsi(daily_close, period=14).shift(1)  # shift 1 day: no lookahead
+    daily_rsi   = _calculate_rsi(daily_close, period=14).shift(1)
     df["daily_rsi"] = df["date"].map(daily_rsi)
 
-    # --- VIX regime filter (Fix 3) ---
-    # Map daily VIX open to intraday rows (VIX is available at market open — no lookahead)
+    # VIX regime: map daily VIX open to intraday rows
     if df_vix is not None:
         vix_open = df_vix["Open"].copy().dropna()
         vix_open.index = pd.to_datetime(vix_open.index).normalize()
         df["vix_open"] = df["date"].map(vix_open)
-        vix_ok = df["vix_open"].fillna(25) < 40  # Skip extreme panic days (VIX > 40)
+
+    if use_vix_filter and df_vix is not None:
+        vix_ok = df["vix_open"].fillna(25) < vix_threshold
     else:
         vix_ok = pd.Series(True, index=df.index)
 
-    # --- Enhanced entry signals ---
+    # Build entry signals — always require ORB day-level confirmation
+    rsi_long_ok  = (df["daily_rsi"] > rsi_long_thresh)  if use_rsi else pd.Series(True, index=df.index)
+    rsi_short_ok = (df["daily_rsi"] < rsi_short_thresh) if use_rsi else pd.Series(True, index=df.index)
+
     df["buy"] = (
-        (df["Close"] > df["upper"])    # Momentum band breakout
-        & df["orb_day_breakout"]       # ORB broken upward at any point today (day-level, persistent)
-        & (df["daily_rsi"] > 50)       # Daily RSI confirms bullish momentum (stable signal)
-        & vix_ok                       # VIX regime filter
-        & df["trade_time"]             # Trade at :00 and :30 only
+        (df["Close"] > df["upper"])  # Momentum band breakout
+        & df["orb_day_breakout"]     # ORB day-level confirmation (upward)
+        & rsi_long_ok                # Optional daily RSI filter
+        & vix_ok                     # Optional VIX regime filter
+        & df["trade_time"]           # Only at :00 and :30
     )
     df["sell"] = (
-        (df["Close"] < df["lower"])    # Momentum band breakdown
-        & df["orb_day_breakdown"]      # ORB broken downward at any point today (day-level, persistent)
-        & (df["daily_rsi"] < 50)       # Daily RSI confirms bearish momentum
-        & vix_ok                       # VIX regime filter
-        & df["trade_time"]             # Trade at :00 and :30 only
+        (df["Close"] < df["lower"])  # Momentum band breakdown
+        & df["orb_day_breakdown"]    # ORB day-level confirmation (downward)
+        & rsi_short_ok               # Optional daily RSI filter
+        & vix_ok                     # Optional VIX regime filter
+        & df["trade_time"]           # Only at :00 and :30
     )
+
+    # Long-only mode: suppress all short entry signals
+    if long_only:
+        df["sell"] = False
 
     return df

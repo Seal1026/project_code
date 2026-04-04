@@ -8,7 +8,9 @@ def _mark_trade(df, index, column):
     df.loc[index, column] = True
 
 
-def _log_day_start(timestamp, position_qty, realized_pnl, share_today, cash, open_price):
+def _log_day_start(verbose, timestamp, position_qty, realized_pnl, share_today, cash, open_price):
+    if not verbose:
+        return
     print("===============================")
     print(
         f"{timestamp}: Start of day. Position quantity: {position_qty}. "
@@ -17,7 +19,9 @@ def _log_day_start(timestamp, position_qty, realized_pnl, share_today, cash, ope
     )
 
 
-def _log_position_entry(side, timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity):
+def _log_position_entry(verbose, side, timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity):
+    if not verbose:
+        return
     print(
         f"{timestamp}: ENTER {side}: Position quantity: {position_qty}. "
         f"Realized pnl: {realized_pnl}. Cash: {cash}. "
@@ -25,7 +29,9 @@ def _log_position_entry(side, timestamp, position_qty, realized_pnl, cash, avg_e
     )
 
 
-def _log_position_exit(side, timestamp, profit, position_qty, close_price, realized_pnl, cash, avg_entry_price, equity):
+def _log_position_exit(verbose, side, timestamp, profit, position_qty, close_price, realized_pnl, cash, avg_entry_price, equity):
+    if not verbose:
+        return
     print(
         f"{timestamp}: EXIT {side}: Profit: {profit}. Close: {close_price}. "
         f"Position quantity: {position_qty}. Realized pnl: {realized_pnl}. "
@@ -33,15 +39,21 @@ def _log_position_exit(side, timestamp, profit, position_qty, close_price, reali
     )
 
 
-def _log_position_hold(side, timestamp, close_price, upper, lower):
+def _log_position_hold(verbose, side, timestamp, close_price, upper, lower):
+    if not verbose:
+        return
     print(f"{timestamp}: REMAIN {side}: Close: {close_price}. Upper: {upper}. Lower: {lower}")
 
 
-def _log_flat(timestamp, close_price, upper, lower):
+def _log_flat(verbose, timestamp, close_price, upper, lower):
+    if not verbose:
+        return
     print(f"{timestamp}: FLAT: Close: {close_price}. Upper: {upper}. Lower: {lower}")
 
 
-def _log_day_end(timestamp, position_qty, realized_pnl, close_price, cash):
+def _log_day_end(verbose, timestamp, position_qty, realized_pnl, close_price, cash):
+    if not verbose:
+        return
     print(
         f"{timestamp}: End of day. Position quantity: {position_qty}. "
         f"Realized pnl: {realized_pnl}. Close: {close_price}. Cash: {cash}. "
@@ -49,7 +61,9 @@ def _log_day_end(timestamp, position_qty, realized_pnl, close_price, cash):
     )
 
 
-def _log_backtest_end(position_qty, realized_pnl, cash, avg_entry_price, equity):
+def _log_backtest_end(verbose, position_qty, realized_pnl, cash, avg_entry_price, equity):
+    if not verbose:
+        return
     print(
         f"END OF BACKTEST: Position quantity: {position_qty}. "
         f"Realized pnl: {realized_pnl}. Cash: {cash}. "
@@ -103,14 +117,15 @@ def _calculate_share_today(calc_share_function, equity, cash, open_price, row, l
     return calc_share_function(cash, row, lvg)
 
 
-def _handle_entry(df, index, side, share_today, close_price, realized_pnl, equity, timestamp, cash, fill_price=None):
+def _handle_entry(verbose, df, index, side, share_today, close_price, realized_pnl, equity, timestamp, cash, fill_price=None):
     position_qty, avg_entry_price, cash = _enter_position(df, index, side, share_today, close_price, cash, fill_price)
     unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
-    _log_position_entry(side.upper(), timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity)
+    _log_position_entry(verbose, side.upper(), timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity)
     return position_qty, avg_entry_price, cash, unrealized_pnl, equity
 
 
 def _close_and_optionally_reverse(
+    verbose,
     df,
     index,
     current_side,
@@ -129,7 +144,7 @@ def _close_and_optionally_reverse(
     profit, cash, realized_pnl = _close_position(position_qty, avg_entry_price, close_price, cash, realized_pnl, close_fill_price)
     _mark_trade(df, index, "close")
     _, exit_equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
-    _log_position_exit(current_side.upper(), timestamp, profit, position_qty, close_price, realized_pnl, cash, avg_entry_price, exit_equity)
+    _log_position_exit(verbose, current_side.upper(), timestamp, profit, position_qty, close_price, realized_pnl, cash, avg_entry_price, exit_equity)
 
     if enter_opposite:
         position_qty, avg_entry_price, cash = _enter_position(df, index, next_side, share_today, close_price, cash, entry_fill_price)
@@ -139,12 +154,26 @@ def _close_and_optionally_reverse(
     unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
 
     if enter_opposite:
-        _log_position_entry(next_side.upper(), timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity)
+        _log_position_entry(verbose, next_side.upper(), timestamp, position_qty, realized_pnl, cash, avg_entry_price, equity)
 
     return position_qty, avg_entry_price, cash, realized_pnl, unrealized_pnl, equity
 
 
-def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slippage_model=None):
+def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False,
+             slippage_model=None, verbose=False):
+    """
+    Run backtest on a prepared signals dataframe.
+
+    Parameters
+    ----------
+    df : DataFrame with columns: Open, Close, upper, lower, buy, sell,
+         optionally long_stop, short_stop (for VWAP-based exits).
+    calc_share_function : callable(cash, row, lvg) -> int, or None (uses equity//open)
+    lvg : leverage cap passed to calc_share_function
+    enter_opposite : if True, reverse position instead of just closing
+    slippage_model : HybridLinearCostModel instance (or compatible), or None
+    verbose : if False (default) suppresses all trade-level print output
+    """
     df = df.copy()
 
     position_qty = 0
@@ -193,7 +222,7 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slipp
 
         if timestamp in day_first_set:
             share_today = _calculate_share_today(calc_share_function, equity, cash, open_price, row, lvg)
-            _log_day_start(timestamp, position_qty, realized_pnl, share_today, cash, open_price)
+            _log_day_start(verbose, timestamp, position_qty, realized_pnl, share_today, cash, open_price)
             unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
             _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
@@ -202,14 +231,15 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slipp
             if position_qty != 0:
                 eod_fill = _close_long_fill if position_qty > 0 else _close_short_fill
                 profit, cash, realized_pnl = _close_position(position_qty, avg_entry_price, close_price, cash, realized_pnl, eod_fill)
-                print(
-                    f"{timestamp}: CLOSE POSITION: Profit: {profit}. Position quantity: {position_qty}. "
-                    f"Close: {close_price}. Cash: {cash}. Avg entry price: {avg_entry_price}."
-                )
+                if verbose:
+                    print(
+                        f"{timestamp}: CLOSE POSITION: Profit: {profit}. Position quantity: {position_qty}. "
+                        f"Close: {close_price}. Cash: {cash}. Avg entry price: {avg_entry_price}."
+                    )
                 position_qty, avg_entry_price = _reset_position()
 
             unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
-            _log_day_end(timestamp, position_qty, realized_pnl, close_price, cash)
+            _log_day_end(verbose, timestamp, position_qty, realized_pnl, close_price, cash)
             _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
 
@@ -221,15 +251,15 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slipp
         if position_qty == 0:
             if buy_signal:
                 position_qty, avg_entry_price, cash, unrealized_pnl, equity = _handle_entry(
-                    df, df.index[i], "long", share_today, close_price, realized_pnl, equity, timestamp, cash, _buy_fill
+                    verbose, df, df.index[i], "long", share_today, close_price, realized_pnl, equity, timestamp, cash, _buy_fill
                 )
             elif short_signal:
                 position_qty, avg_entry_price, cash, unrealized_pnl, equity = _handle_entry(
-                    df, df.index[i], "short", share_today, close_price, realized_pnl, equity, timestamp, cash, _sell_fill
+                    verbose, df, df.index[i], "short", share_today, close_price, realized_pnl, equity, timestamp, cash, _sell_fill
                 )
             else:
                 unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
-                _log_flat(timestamp, close_price, upper, lower)
+                _log_flat(verbose, timestamp, close_price, upper, lower)
 
             _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
@@ -237,6 +267,7 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slipp
         if position_qty > 0:
             if long_stop:
                 position_qty, avg_entry_price, cash, realized_pnl, unrealized_pnl, equity = _close_and_optionally_reverse(
+                    verbose,
                     df,
                     df.index[i],
                     "long",
@@ -254,13 +285,14 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slipp
                 )
             else:
                 unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
-                _log_position_hold("LONG", timestamp, close_price, upper, lower)
+                _log_position_hold(verbose, "LONG", timestamp, close_price, upper, lower)
 
             _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
             continue
 
         if short_stop:
             position_qty, avg_entry_price, cash, realized_pnl, unrealized_pnl, equity = _close_and_optionally_reverse(
+                verbose,
                 df,
                 df.index[i],
                 "short",
@@ -278,7 +310,7 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slipp
             )
         else:
             unrealized_pnl, equity = _mark_to_market(position_qty, avg_entry_price, close_price, cash)
-            _log_position_hold("SHORT", timestamp, close_price, upper, lower)
+            _log_position_hold(verbose, "SHORT", timestamp, close_price, upper, lower)
 
         _update_arrays(i, realized_pnl, unrealized_pnl, cash, equity, realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr)
 
@@ -287,5 +319,5 @@ def backtest(df, calc_share_function=None, lvg=None, enter_opposite=False, slipp
     df["cash"] = cash_arr
     df["equity"] = equity_arr
 
-    _log_backtest_end(position_qty, realized_pnl, cash, avg_entry_price, equity)
+    _log_backtest_end(verbose, position_qty, realized_pnl, cash, avg_entry_price, equity)
     return realized_pnl_arr, unrealized_pnl_arr, cash_arr, equity_arr, df

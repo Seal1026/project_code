@@ -90,6 +90,7 @@ def plot_equity_with_halfyear_vix(
     df_vix,
     title="Strategy Equity Curves with Semiannual Average VIX",
     vix_col="Open",
+    save_path=None,
 ):
     price_index = pd.to_datetime(price_index)
     vix = df_vix.copy()
@@ -180,6 +181,8 @@ def plot_equity_with_halfyear_vix(
 
     fig.align_ylabels([ax_equity, ax_vix])
     fig.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
     return fig, (ax_equity, ax_vix)
 

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ':*)",
+      "Bash(python -c \"import my_trade_algo; import my_backtest; import inspect; print\\('backtest sig:', inspect.signature\\(my_backtest.backtest\\)\\); print\\('best_strategy exists:', hasattr\\(my_trade_algo, 'best_strategy'\\)\\); print\\('share_cal_vix_regime exists:', hasattr\\(my_trade_algo, 'share_cal_vix_regime'\\)\\); print\\('All imports OK'\\)\")"
+    ]
+  }
+}

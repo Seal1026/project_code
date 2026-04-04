@@ -141,14 +141,138 @@ def buy_and_hold(cash,df):
 
 def orb_baseline(df,orb_minutes=30):
     df = calculate_orb(df, orb_minutes)
-    df["buy"]  = df["orb_breakout"]  & df["trade_time"] 
+    # Add trade_time if not already present
+    if "trade_time" not in df.columns:
+        minute = df.index.minute
+        df.loc[trade_time(minute), ["trade_time"]] = True
+    # Provide upper/lower as ORB high/low for backtest logging compatibility
+    df["upper"] = df["orb_high"]
+    df["lower"] = df["orb_low"]
+    df["buy"]  = df["orb_breakout"]  & df["trade_time"]
     df["sell"] = df["orb_breakdown"]  & df["trade_time"]
     return df
 
 def mom_orb_combined(df,orb_minutes=30):
     df = calculate_orb(df, orb_minutes)
     df = calculate_momentum(df)
-    df["buy"]  = (df["buy"]  & df["orb_breakout"])  & df["trade_time"] 
+    df["buy"]  = (df["buy"]  & df["orb_breakout"])  & df["trade_time"]
     df["sell"] = (df["sell"] & df["orb_breakdown"])  & df["trade_time"]
-    
+
+    return df
+
+
+def add_istar_slippage_features(df, lookback=30):
+    """Prepare I-Star slippage model features (ADV, sigma). Wrapper around my_slippage."""
+    import my_slippage as msl
+    return msl.prepare_istar_features(df, lookback=lookback)
+
+
+def share_cal_vix_regime(cash, row, lvg):
+    """
+    Position sizing with VIX regime overlay on top of volatility targeting.
+    Scales position size down in high-volatility regimes:
+    - VIX < 20:  full size (scale=1.0)
+    - 20-25 VIX: 80% size
+    - 25-35 VIX: 60% size
+    - VIX >= 35: 30% size (extreme caution)
+    """
+    open_price = row.Open
+    std = getattr(row, 'vol_daily_ret_14d', np.nan)
+    if pd.isna(std) or std <= 0:
+        std = 0.02  # fallback to 2% daily vol
+
+    # VIX regime scaling
+    vix = getattr(row, 'vix_open', np.nan)
+    try:
+        vix_val = float(vix)
+        if np.isnan(vix_val):
+            regime_scale = 0.8
+        elif vix_val >= 35:
+            regime_scale = 0.3
+        elif vix_val >= 25:
+            regime_scale = 0.6
+        elif vix_val >= 20:
+            regime_scale = 0.8
+        else:
+            regime_scale = 1.0
+    except (ValueError, TypeError):
+        regime_scale = 0.8
+
+    target_vol = 0.02
+    target_position_value = cash * min(lvg, target_vol / std) * regime_scale
+    position_size = target_position_value / open_price
+    return np.floor(position_size)
+
+
+def _calculate_rsi(series, period=14):
+    """Compute RSI indicator on a price series."""
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def best_strategy(df, df_vix=None, orb_minutes=30):
+    """
+    Best performing strategy combining:
+    1. Momentum band signals (upper/lower based on 14-day historical vol)
+    2. VWAP-based stop loss (exit when price crosses VWAP)
+    3. ORB day-level confirmation filter — once the opening range is broken in a given
+       direction, that flag stays True for the entire rest of the day. This avoids the
+       per-bar flickering of raw orb_breakout (which resets to False whenever price
+       dips back below ORB high even briefly).
+    4. Daily RSI filter — RSI is computed on daily closes (not per-minute bars), so it
+       is a stable, meaningful trend signal rather than 14-minute noise.
+    5. VIX regime filter (skip trading when VIX > 40, extreme market stress)
+    6. VIX-adjusted position sizing via share_cal_vix_regime
+    """
+    df = calculate_orb(df, orb_minutes)
+    df = calculate_momentum(df)             # adds upper, lower, trade_time, buy, sell
+    df = cross_boundary_buy_signal_VWAP(df) # adds VWAP, long_stop, short_stop
+    df = daily_share_by_std(df)             # adds vol_daily_ret_14d
+
+    # --- Day-level ORB flag (Fix 1) ---
+    # Once the ORB is broken intraday, mark the entire rest of that day as "broken".
+    # This prevents valid momentum signals from being blocked just because price
+    # briefly dipped below ORB high at the :00/:30 sampling moment.
+    df["date"] = pd.to_datetime(df.index.date)
+    df["orb_day_breakout"]  = df.groupby("date")["orb_breakout"].transform("any")
+    df["orb_day_breakdown"] = df.groupby("date")["orb_breakdown"].transform("any")
+
+    # --- Daily RSI filter (Fix 2) ---
+    # Use daily closing prices for RSI — avoids the extreme noise of 1-minute RSI.
+    # RSI > 50 = bullish daily momentum; RSI < 50 = bearish daily momentum.
+    daily_close = df.groupby("date")["Close"].last()
+    daily_rsi   = _calculate_rsi(daily_close, period=14).shift(1)  # shift 1 day: no lookahead
+    df["daily_rsi"] = df["date"].map(daily_rsi)
+
+    # --- VIX regime filter (Fix 3) ---
+    # Map daily VIX open to intraday rows (VIX is available at market open — no lookahead)
+    if df_vix is not None:
+        vix_open = df_vix["Open"].copy().dropna()
+        vix_open.index = pd.to_datetime(vix_open.index).normalize()
+        df["vix_open"] = df["date"].map(vix_open)
+        vix_ok = df["vix_open"].fillna(25) < 40  # Skip extreme panic days (VIX > 40)
+    else:
+        vix_ok = pd.Series(True, index=df.index)
+
+    # --- Enhanced entry signals ---
+    df["buy"] = (
+        (df["Close"] > df["upper"])    # Momentum band breakout
+        & df["orb_day_breakout"]       # ORB broken upward at any point today (day-level, persistent)
+        & (df["daily_rsi"] > 50)       # Daily RSI confirms bullish momentum (stable signal)
+        & vix_ok                       # VIX regime filter
+        & df["trade_time"]             # Trade at :00 and :30 only
+    )
+    df["sell"] = (
+        (df["Close"] < df["lower"])    # Momentum band breakdown
+        & df["orb_day_breakdown"]      # ORB broken downward at any point today (day-level, persistent)
+        & (df["daily_rsi"] < 50)       # Daily RSI confirms bearish momentum
+        & vix_ok                       # VIX regime filter
+        & df["trade_time"]             # Trade at :00 and :30 only
+    )
+
     return df

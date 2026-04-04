@@ -2,127 +2,98 @@ import numpy as np
 import pandas as pd
 
 
-def prepare_istar_features(
-    df,
-    lookback=30,
-    min_periods=30,
-    price_col="Close",
-    volume_col="Volume",
-):
+def prepare_hybrid_features(df, price_col="Close", abs_pct_ch_col="abs_pct_ch"):
     """
-    Prepare daily liquidity and volatility features required by the I-Star model.
+    Ensure the dataframe has the columns needed by HybridLinearCostModel.
 
-    The model uses:
-    - Q: order size in shares
-    - ADV: trailing average daily volume
-    - sigma: trailing daily return volatility
+    Required columns (must already exist or be computable):
+    - abs_pct_ch : absolute intraday % change from day open (produced by calculate_momentum)
 
-    Features are estimated on daily data, shifted by one day, and then mapped
-    back to each intraday row so the backtest does not use future information.
+    If abs_pct_ch is missing, it is recomputed from scratch so this function
+    can be used on any OHLCV dataframe.
     """
     df = df.copy()
-    df["date"] = pd.to_datetime(df.index.date)
 
-    daily_volume = df.groupby("date")[volume_col].sum()
-    daily_close = df.groupby("date")[price_col].last()
-    daily_return = daily_close.pct_change()
+    if abs_pct_ch_col not in df.columns:
+        day_open = df.groupby(df.index.date)[price_col].transform("first")
+        df[abs_pct_ch_col] = (df[price_col] / day_open - 1).abs()
 
-    adv = daily_volume.shift(1).rolling(window=lookback, min_periods=min_periods).mean()
-    sigma = daily_return.shift(1).rolling(window=lookback, min_periods=min_periods).std(ddof=1)
-
-    df["adv_30d"] = df["date"].map(adv)
-    df["sigma_30d"] = df["date"].map(sigma)
     return df
 
 
-class IStarSlippageModel:
+class HybridLinearCostModel:
     """
-    I-Star market-impact model based on Kissell and Malamut style parameters.
+    Hybrid Linear Transaction Cost Model.
 
-    Impact is modeled in basis points as:
+    Total cost per trade:
 
-        I*_bp = a1 * (Q / ADV) ** a2 * sigma ** a3
+        C_t = (Fee_fixed + Slippage_dynamic_t) * Q_t
 
     where:
-    - Q is order size in shares
-    - ADV is trailing average daily volume
-    - sigma is trailing daily return volatility (decimal form)
-    """
 
-    PARAMETER_SETS = {
-        "all_data": {"a1": 708.0, "a2": 0.55, "a3": 0.71},
-        "large_cap": {"a1": 687.0, "a2": 0.70, "a3": 0.72},
-        "small_cap": {"a1": 702.0, "a2": 0.47, "a3": 0.69},
-    }
+        Slippage_dynamic_t = Slippage_base + lambda_ * |pct_ch_t| * P_t
+
+    Parameters
+    ----------
+    fee_fixed : float
+        Fixed brokerage commission per share (default $0.0035, typical retail broker).
+    slippage_base : float
+        Minimum execution friction per share (default $0.0001, ~0.5 bp on a $20 stock).
+    lambda_ : float
+        Sensitivity coefficient scaling slippage with instantaneous volatility
+        (default 0.01 — 1 % of the current-bar absolute move added as slippage).
+    abs_pct_ch_col : str
+        Column name holding |pct_ch_t|, the per-bar absolute % change from day open.
+        Produced automatically by calculate_momentum().
+    """
 
     def __init__(
         self,
-        parameter_set="large_cap",
-        a1=None,
-        a2=None,
-        a3=None,
-        adv_col="adv_30d",
-        sigma_col="sigma_30d",
-        strict=True,
+        fee_fixed=0.0035,
+        slippage_base=0.0001,
+        lambda_=0.01,
+        abs_pct_ch_col="abs_pct_ch",
     ):
-        if parameter_set not in self.PARAMETER_SETS:
-            raise ValueError(
-                f"Unknown parameter_set '{parameter_set}'. "
-                f"Expected one of {sorted(self.PARAMETER_SETS)}."
-            )
+        self.fee_fixed = fee_fixed
+        self.slippage_base = slippage_base
+        self.lambda_ = lambda_
+        self.abs_pct_ch_col = abs_pct_ch_col
 
-        params = self.PARAMETER_SETS[parameter_set].copy()
-        if a1 is not None:
-            params["a1"] = float(a1)
-        if a2 is not None:
-            params["a2"] = float(a2)
-        if a3 is not None:
-            params["a3"] = float(a3)
+    def _dynamic_slippage_per_share(self, observed_price, row):
+        """
+        Slippage_dynamic_t = Slippage_base + lambda * |pct_ch_t| * P_t
+        """
+        abs_pct_ch = getattr(row, self.abs_pct_ch_col, 0.0)
+        if pd.isna(abs_pct_ch):
+            abs_pct_ch = 0.0
+        return self.slippage_base + self.lambda_ * float(abs_pct_ch) * float(observed_price)
 
-        self.a1 = params["a1"]
-        self.a2 = params["a2"]
-        self.a3 = params["a3"]
-        self.adv_col = adv_col
-        self.sigma_col = sigma_col
-        self.strict = strict
-
-    def _require_feature(self, row, name):
-        value = getattr(row, name, np.nan)
-        if pd.isna(value) or value <= 0:
-            if self.strict:
-                raise ValueError(
-                    f"Missing or invalid I-Star feature '{name}' on row {getattr(row, 'Index', 'unknown')}."
-                )
-            return np.nan
-        return float(value)
-
-    def impact_bps(self, quantity, row):
-        quantity = abs(float(quantity))
-        if quantity == 0:
-            return 0.0
-
-        adv = self._require_feature(row, self.adv_col)
-        sigma = self._require_feature(row, self.sigma_col)
-        if pd.isna(adv) or pd.isna(sigma):
-            return 0.0
-
-        participation = quantity / adv
-        if participation <= 0:
-            return 0.0
-
-        return self.a1 * (participation ** self.a2) * (sigma ** self.a3)
-
-    def slippage_cost(self, side, quantity, observed_price, row):
-        impact_fraction = self.impact_bps(quantity, row) / 10000.0
-        return abs(float(quantity)) * float(observed_price) * impact_fraction
+    def cost_per_trade(self, quantity, observed_price, row):
+        """
+        Total cost of a trade:
+            C_t = (fee_fixed + slippage_dynamic_t) * Q_t
+        """
+        q = abs(float(quantity))
+        dyn_slip = self._dynamic_slippage_per_share(observed_price, row)
+        return (self.fee_fixed + dyn_slip) * q
 
     def fill_price(self, side, quantity, observed_price, row):
-        impact_fraction = self.impact_bps(quantity, row) / 10000.0
+        """
+        Adjust the observed price by the per-share cost to obtain the effective fill price.
+
+        Buys fill higher (cost added), sells fill lower (cost deducted).
+        """
+        dyn_slip = self._dynamic_slippage_per_share(observed_price, row)
+        cost_per_share = self.fee_fixed + dyn_slip
         observed_price = float(observed_price)
 
         if side == "buy":
-            return observed_price * (1 + impact_fraction)
+            return observed_price + cost_per_share
         if side == "sell":
-            return observed_price * (1 - impact_fraction)
+            return observed_price - cost_per_share
 
         raise ValueError("side must be 'buy' or 'sell'")
+
+    def slippage_cost(self, side, quantity, observed_price, row):
+        """Alias matching the I-Star API for drop-in compatibility."""
+        return self.cost_per_trade(quantity, observed_price, row)

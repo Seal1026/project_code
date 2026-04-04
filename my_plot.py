@@ -115,16 +115,17 @@ def plot_equity_with_halfyear_vix(
         gridspec_kw={"height_ratios": [3.5, 1.2], "hspace": 0.08},
     )
 
-    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#4c566a", "#d62728"]
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#4c566a", "#d62728",  "#e377c2", "#7f7f7f", "#bcbd22"]
     for i, (label, series) in enumerate(equity_series_dict.items()):
         series = pd.Series(series, index=price_index) if not isinstance(series, pd.Series) else series
         series.index = pd.to_datetime(series.index)
+        print(f" {i}  {palette[i]}")
         ax_equity.plot(
             series.index,
             series.values,
             label=label,
             linewidth=2.1 if "Buy and hold" not in label else 1.8,
-            color=palette[i % len(palette)],
+            color=palette[i],
             alpha=0.95,
         )
 

@@ -110,3 +110,93 @@ Git commits made on workaround:
 66ba8cb — Exp 1 results
 14b8d3a — notebook updated with best config
 Notebook was re-executed via nbconvert with the winning configuration in Cells 17 and 19. Charts saved to result/.
+---
+
+## Task 1 — Switch Final Strategy to Experiment 3 (E3)
+
+**Timestamp**: 2026-04-05
+
+### Change
+Replaced the notebook's "Strategy 4 (Best)" (Experiment 1 config) with Experiment 3 as the **Final Strategy**.
+All references to "Strategy 4 (Best)" and "Strategy 4 + Cost Model" renamed to "Final Strategy" / "Final Strategy + Cost Model" across:
+- Cell 16 (markdown description)
+- Cell 17 (backtest code)
+- Cell 22 (equity_curves dict)
+- Cell 26 (heatmap dict)
+
+### E3 Config
+| Parameter | Value |
+|---|---|
+| `use_rsi` | False |
+| `use_vix_filter` | True |
+| `vix_threshold` | 60.0 |
+| `long_only` | True |
+| sizing | `share_cal_std` |
+| leverage | 4 |
+
+### Results (Final Strategy = E3)
+| Metric | No Cost | + Cost Model |
+|---|---|---|
+| Total Return | 270.7% | 123.2% |
+| CAGR | 10.4% | 6.2% |
+| Sharpe | 1.12 | 0.66 |
+| MDD | 10.2% | 12.1% |
+| Beta | 0.10 | 0.09 |
+
+Rationale: E3 (ORB + long-only + VIX<60) was chosen over E1 (simpler, no VIX filter) for presentation because it explicitly incorporates a regime filter, making the strategy rationale more complete and defensible despite marginally lower Sharpe (1.12 vs 1.15).
+
+---
+
+## Task 2 — Beta Analysis Cell Added
+
+**Timestamp**: 2026-04-05
+
+### Change
+Added Cell 29 (`beta_analysis_01`) to notebook, immediately after the performance summary.
+
+### Output
+```
+Strategy 3 + Cost Model
+  Beta (vs SPY):        -0.06
+  Alpha (annualised):    5.7%
+  Total Return:         75.1%
+  Max Drawdown:         38.2%
+
+Final Strategy + Cost Model
+  Beta (vs SPY):        +0.09
+  Alpha (annualised):    5.6%
+  Total Return:         123.2%
+  Max Drawdown:         12.1%
+
+SPY Buy & Hold  Max Drawdown: 52.3%
+```
+
+### Interpretation
+Both cost-adjusted strategies have beta ≈ 0 (−0.06 and +0.09), confirming near-zero market correlation. This validates the essay argument: while passive SPY outperformed in total return, the strategies' primary value is as **diversification vehicles** — their P&L is driven by intraday momentum signals, not broad market exposure. They maintained positive returns while B&H suffered >50% drawdowns in 2008/2020.
+
+---
+
+## Task 3 — Trade Count & Cost-to-Profit Ratio Cell Added
+
+**Timestamp**: 2026-04-05
+
+### Change
+Added Cell 30 (`trade_cpr_01`) to notebook after the beta analysis cell.
+
+### Trade Statistics
+| Strategy | Long | Short | Total | Avg/Year |
+|---|---|---|---|---|
+| Strategy 3 (no cost) | 1538 | 1565 | 3103 | 233.5 |
+| Strategy 3 + Cost | 1538 | 1565 | 3103 | 233.5 |
+| Final Strategy (no cost) | 1452 | 0 | 1452 | 109.3 |
+| Final Strategy + Cost | 1452 | 0 | 1452 | 109.3 |
+
+Final Strategy is long-only (0 short entries) and trades ~53% as often as Strategy 3.
+
+### Cost-to-Profit Ratio (CPR)
+| Strategy | No-Cost Return | With-Cost Return | CPR |
+|---|---|---|---|
+| Strategy 3 | 481.6% | 75.1% | **84.4%** |
+| Final Strategy | 270.7% | 123.2% | **54.5%** |
+
+Strategy 3's CPR of 84.4% means 84 cents of every gross dollar earned went to transaction costs — a consequence of 233 trades/year × high leverage. The Final Strategy's CPR of 54.5% reflects its stricter entry filters (day-level ORB + VIX<60), resulting in fewer, higher-conviction trades where each earned dollar is less eroded.

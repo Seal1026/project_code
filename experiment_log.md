@@ -84,3 +84,29 @@ Started: 2026-04-05 00:21:43
 
 
 **Rationale for this experiment**: Add a VIX filter but only for extreme panic (VIX>60, e.g. 2008 crash peak / March 2020). VIX>40 was too aggressive and killed profitable vol windows. Long-only retained. No RSI filter.
+
+
+Results Summary
+Baselines:
+
+Strategy	Sharpe	CAGR	MDD
+SPY Buy & Hold	0.48	9.2%	52.3%
+Strategy 3 (vol-adj sizing)	0.92	14.2%	31.2%
+3 Experiments run:
+
+Exp	Config	Sharpe (no cost)	Sharpe (+cost)
+E1 ✓	ORB + long-only, no RSI, no VIX	1.15	0.69
+E2	ORB + RSI 40/60 + long-only	0.80	0.36
+E3	ORB + long-only + VIX<60	1.12	0.66
+Winner: Experiment 1 — ORB day-level confirmation + long_only=True + share_cal_std (L=4)
+
+No-cost Sharpe 1.15 > S3's 0.92 (+0.23 improvement)
+MDD dramatically lower: 10.2% vs 31.2% for S3
+Cost-model Sharpe 0.69 > B&H's 0.48 (Sharpe beats B&H, but CAGR 6.6% < B&H 9.2%)
+Key finding: Adding RSI filter (E2) hurt — it cut trade frequency too aggressively. The VIX filter at threshold=60 (E3) was nearly identical to E1, confirming extreme-only VIX filtering has minimal impact.
+
+Git commits made on workaround:
+
+66ba8cb — Exp 1 results
+14b8d3a — notebook updated with best config
+Notebook was re-executed via nbconvert with the winning configuration in Cells 17 and 19. Charts saved to result/.

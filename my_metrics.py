@@ -121,6 +121,38 @@ def yearly_metrics_table(equity_series_dict, rf_annual=0.01, min_obs=2):
 
     return pd.concat(frames, ignore_index=True)
 
+def skew(equity):
+    daily_ret = daily_pct_change(equity)
+    return daily_ret.skew()
+
+
+def metrics_row(equity, rf_annual=0.01, spy_equity=None):
+    """Return a dict of all key performance metrics for one equity series."""
+    row = {
+        "TotRet (%)":    total_return(equity) * 100,
+        "CAGR (%)":      irr_cagr(equity) * 100,
+        "Vol (%)":       vol(equity) * 100,
+        "SR":            sharpe(equity, rf_annual=rf_annual),
+        "MDD (%)":       mdd(equity) * 100,
+        "Hit Ratio (%)": hit_ratio(equity) * 100,
+        "Skew":          skew(equity),
+    }
+    if spy_equity is not None:
+        alpha_val, beta_val = alpha_beta(equity, spy_equity, rf_annual=rf_annual)
+        row["Alpha (ann.%)"] = alpha_val * 100
+        row["Beta"] = beta_val
+    return row
+
+
+def metrics_table(equity_dict, rf_annual=0.01, spy_equity=None):
+    """Build a DataFrame with one row per strategy and all key metrics as columns."""
+    rows = {name: metrics_row(eq, rf_annual=rf_annual, spy_equity=spy_equity)
+            for name, eq in equity_dict.items()}
+    df = pd.DataFrame(rows).T
+    df.index.name = "Strategy"
+    return df
+
+
 def print_metrics(name, equity, spy_equity=None):
     print(f"\n{name}")
     print(f"Total Return: {total_return(equity):.1%}")
